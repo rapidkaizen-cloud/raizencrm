@@ -1,7 +1,7 @@
 # Catatan Perbaikan Kode — Deploy Produksi Pertama
 
 Bug kode yang ditemukan saat deploy ke VPS dan perbaikannya. 7 Agustus 2026.
-Commit terkait: `5df26f9`, `c69ab96`.
+Commit terkait: `5df26f9`, `c69ab96`, `76c50c2`, `4444858`.
 
 ---
 
@@ -145,15 +145,70 @@ Katalog DeepSeek tidak mengirim field `name`, jadi `filterChatModels` diurutkan 
 
 ---
 
-## 4. Yang Perlu Diwaspadai
+## 4. Satu pesan masuk dibalas dua kali & customer tercatat dobel
 
-Ketiga hal di bawah ini adalah selisih lingkungan yang membuat bug lolos dari dev ke produksi:
+**Gejala**
+
+Setiap ada pesan masuk dari kontak baru, AI mengirim dua balasan ke customer yang sama. Di dashboard, orang itu juga muncul sebagai dua kontak: satu dengan nomor WA asli dan nama profil, satu lagi berupa deretan angka panjang tanpa nama.
+
+**Akar masalah**
+
+Server WhatsApp mengirim **satu** pesan sebanyak dua kali selama masa migrasi LID: sekali dialamatkan ke sesi nomor telepon, sekali ke sesi LID. Keduanya membawa ID pesan yang identik. Terlihat jelas di `chat_histories` — dua baris, `wa_msg_id` sama persis, `sender` berbeda:
+
+| id | sender | wa_msg_id |
+|----|--------|-----------|
+| 15 | `6282273463107` (nomor) | `AC1D4B04…6ACB` |
+| 16 | `228397938663658` (LID) | `AC1D4B04…6ACB` |
+
+Kode sebenarnya sudah menukar LID → nomor asli, tapi hanya kalau `SenderAlt` terisi. Untuk kontak yang **baru pertama kali** chat, pemetaan LID→PN belum ada di store whatsmeow, jadi `SenderAlt` kosong dan sender tetap berupa LID.
+
+Akibatnya kedua event punya "sender" yang berbeda, sehingga semua pengaman anti-dobel yang ada jadi tidak mempan — semuanya di-key per nomor:
+
+- kunci debounce `debounceKey(agentID, sender)`
+- `withContactProcessLock(agentID, sender.User, …)`
+- cek kontak baru / greeting
+
+Dua sender berbeda = dua pipeline CS jalan penuh = dua panggilan AI = dua balasan. Tidak ada saringan berbasis ID pesan di mana pun.
+
+**Kenapa baru ketahuan di produksi**
+
+Butuh kontak WhatsApp asli yang sudah bermigrasi ke LID dan **belum pernah** chat dengan nomor ini. Di simulator dan pengetesan lokal, sender selalu berupa nomor telepon biasa, jadi jalur LID tidak pernah tersentuh. Gejalanya juga hilang sendiri mulai pesan kedua — setelah pemetaan tersimpan, `SenderAlt` terisi dan kedua event mengerucut ke sender yang sama.
+
+**Perbaikan**
+
+| Berkas | Perubahan |
+|--------|-----------|
+| [wa.go](backend/services/wa.go) | `markIncomingSeen(agentID, msgID)` — saring event `*events.Message` berdasarkan ID pesan (TTL 10 menit, terpisah per agent) sebelum masuk pipeline; kiriman kedua dibuang & dicatat ke log |
+| [wa.go](backend/services/wa.go) | `resolvePN(jid, alt)` — alamat LID tanpa `SenderAlt` dicoba dipetakan lewat store whatsmeow (`PNForLID`). Dipakai di tiga jalur: DM masuk, pesan grup, dan balasan manual dari HP |
+| [lidmigrate.go](backend/handlers/lidmigrate.go) | `StartLIDSweeperCtx` — sapuan LID tiap 15 menit untuk agent yang tersambung |
+| [main.go](backend/main.go) | Pasang sweeper di startup, ikut `appCtx` |
+
+Saringan ID pesan adalah pengaman utamanya: berlaku apa pun cara server mengalamatkan pesan, tidak bergantung pada pemetaan LID sudah siap atau belum.
+
+**Kenapa sapuan LID perlu berkala, bukan cukup saat connect**
+
+`migrateLIDSenders` sudah ada sejak awal, tapi hanya dipanggil dari `OnAgentConnected`. Masalahnya pemetaan LID→PN sering baru tersedia **setelah** pesan pertama diproses — jadi baris LID yang lahir di tengah sesi menganggur sampai restart berikutnya. Sapuan berkala menggabungkannya begitu pemetaannya muncul: riwayat chat dipindah (bukan dihapus), baris kontak LID dihapus kalau baris nomor aslinya sudah ada.
+
+**Verifikasi**
+
+```bash
+go build ./... && go test ./backend/services/ -run "MarkIncoming|ResolvePN" -count=1
+```
+
+Empat test di `backend/services/wa_dedupe_test.go` menjaga: kiriman kedua ditolak, saringan terpisah per agent, pesan tanpa ID tidak ikut terbuang, dan `resolvePN` tidak mengubah alamat yang memang sudah berupa nomor telepon.
+
+---
+
+## 5. Yang Perlu Diwaspadai
+
+Keempat hal di bawah ini adalah selisih lingkungan yang membuat bug lolos dari dev ke produksi:
 
 | Aspek | Lokal (Windows) | VPS (Ubuntu bersih) | Dampak |
 |-------|-----------------|---------------------|--------|
 | C compiler | Ada → `CGO_ENABLED=1` | Tidak ada → `CGO_ENABLED=0` | Menyembunyikan bug #1 sepenuhnya |
 | Type check | esbuild, tanpa `tsc` | `tsc -b` penuh | Menyembunyikan bug #2 |
 | Lisensi | `dev.mjs` & `.air.toml` menyuntik `DevMode=true` diam-diam | Harus ditulis manual di perintah build | Tanpa flag, server `os.Exit(1)` saat startup — dengan `Restart=always`, systemd loop crash dan nginx cuma menampilkan 502 |
+| Lawan chat | Simulator & nomor tester yang sudah pernah chat — sender selalu nomor telepon | Kontak asli yang sudah bermigrasi ke LID dan belum pernah chat | Menyembunyikan bug #4; jalur LID tidak pernah tersentuh di lokal |
 
 **Cara paling murah menangkapnya sebelum push** — jalankan di laptop:
 

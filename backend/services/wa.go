@@ -26,17 +26,11 @@ import (
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
 
-	// Pure-Go SQLite driver (no CGO needed) — terdaftar sebagai "sqlite3"
-	"database/sql"
-	sqlite "modernc.org/sqlite"
+	// Driver SQLite pure-Go; init-nya mendaftarkan diri sebagai "sqlite".
+	// Jangan pakai nama "sqlite3" — itu sudah dipegang mattn/go-sqlite3 (via
+	// gorm.io/driver/sqlite) yang jadi stub tanpa CGO.
+	_ "modernc.org/sqlite"
 )
-
-func init() {
-	// Register modernc.org/sqlite under the "sqlite3" driver name (once)
-	// Skip if already registered (e.g., by GORM's sqlite driver)
-	defer func() { recover() }()
-	sql.Register("sqlite3", &sqlite.Driver{})
-}
 
 // IncomingMessage = isi pesan masuk (teks dan/atau media).
 type IncomingMessage struct {
@@ -230,7 +224,7 @@ func sessionDSN(agentID uint) string {
 
 // FirstDeviceJID membaca device pada file sesi agent 1 (untuk migrasi single-number lama).
 func FirstDeviceJID() string {
-	container, err := sqlstore.New(context.Background(), "sqlite3", sessionDSN(1), waLog.Noop)
+	container, err := sqlstore.New(context.Background(), "sqlite", sessionDSN(1), waLog.Noop)
 	if err != nil {
 		return ""
 	}
@@ -259,7 +253,7 @@ func (w *waInstance) Connect(_ string) (string, error) {
 	}
 
 	ctx := context.Background()
-	container, err := sqlstore.New(ctx, "sqlite3", sessionDSN(w.agentID), waLog.Noop)
+	container, err := sqlstore.New(ctx, "sqlite", sessionDSN(w.agentID), waLog.Noop)
 	if err != nil {
 		return "", fmt.Errorf("gagal buat store: %w", err)
 	}
@@ -308,7 +302,7 @@ func (w *waInstance) ConnectPairing(_, phone string) (string, error) {
 	}
 
 	ctx := context.Background()
-	container, err := sqlstore.New(ctx, "sqlite3", sessionDSN(w.agentID), waLog.Noop)
+	container, err := sqlstore.New(ctx, "sqlite", sessionDSN(w.agentID), waLog.Noop)
 	if err != nil {
 		return "", fmt.Errorf("gagal buat store: %w", err)
 	}

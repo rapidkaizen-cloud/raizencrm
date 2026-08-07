@@ -690,7 +690,6 @@ const MessageThread = memo(function MessageThread({
   onLoadOlder?: () => void;
   loadingOlder?: boolean;
 }) {
-  const oldestId = messages.length > 0 ? messages[0].id : 0;
   return (
     <Box
       ref={chatRef}

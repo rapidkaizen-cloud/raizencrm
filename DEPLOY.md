@@ -311,8 +311,8 @@ sudo certbot renew --dry-run
 ## 11. Verifikasi akhir
 
 ```bash
-curl -I https://example.com                        # 200
-curl https://example.com/api/me                    # 401 (benar — belum login)
+curl -sL -o /dev/null -w '%{http_code}\n' https://example.com          # 200
+curl -sL -o /dev/null -w '%{http_code}\n' https://example.com/api/me   # 401 (benar — belum login)
 sudo systemctl status raizencrm nginx
 ```
 

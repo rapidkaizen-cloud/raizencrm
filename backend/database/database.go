@@ -59,7 +59,10 @@ func Init() {
 			log.Printf("MySQL unavailable (%v) — fallback ke SQLite", err)
 		}
 		dbPath := config.Env("DB_PATH", "./wa-assistant.db")
-		DB, err = gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
+		// Driver "sqlite" = modernc.org/sqlite (pure Go, sudah dipakai untuk sesi whatsmeow).
+		// Default gorm.io/driver/sqlite memakai mattn/go-sqlite3 yang butuh CGO.
+		dsn := dbPath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+		DB, err = gorm.Open(sqlite.New(sqlite.Config{DriverName: "sqlite", DSN: dsn}), &gorm.Config{})
 		if err != nil {
 			log.Fatal("Database error (SQLite): ", err)
 		}

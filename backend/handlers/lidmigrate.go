@@ -1,12 +1,49 @@
 package handlers
 
 import (
+	"context"
 	"log"
+	"time"
 
 	"wa-assistant/backend/database"
 	"wa-assistant/backend/models"
 	"wa-assistant/backend/services"
 )
+
+// lidSweepInterval = seberapa sering data LID yang nyangkut dirapikan ulang.
+const lidSweepInterval = 15 * time.Minute
+
+// StartLIDSweeperCtx merapikan pengirim LID secara berkala, bukan hanya saat agent
+// tersambung. Pemetaan LID->PN sering baru tersedia SETELAH pesan pertama kontak baru
+// diproses, jadi pesan itu bisa terlanjur tercatat atas nama LID. Sapuan berkala
+// menggabungkannya ke nomor telepon asli begitu pemetaannya muncul.
+func StartLIDSweeperCtx(ctx context.Context) {
+	sweep := func() {
+		var agents []models.Agent
+		if err := database.DB.Select("id").Find(&agents).Error; err != nil {
+			log.Printf("Sapuan LID: gagal mengambil daftar agent: %v", err)
+			return
+		}
+		for _, a := range agents {
+			if services.WA(a.ID).IsConnected() {
+				migrateLIDSenders(a.ID)
+			}
+		}
+	}
+	go func() {
+		t := time.NewTicker(lidSweepInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				log.Println("Sapuan LID berhenti")
+				return
+			case <-t.C:
+				safeRun("sweepLIDSenders", sweep)
+			}
+		}
+	}()
+}
 
 // migrateLIDSenders merapikan data lama: pengirim yang tersimpan sebagai LID diubah
 // jadi nomor telepon asli (pakai pemetaan LID->PN milik whatsmeow). Idempoten —

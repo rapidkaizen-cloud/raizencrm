@@ -423,6 +423,66 @@ func pairErrMessage(err error) string {
 	}
 }
 
+// incomingDedupeTTL = berapa lama ID pesan masuk diingat untuk menyaring kiriman ganda.
+const incomingDedupeTTL = 10 * time.Minute
+
+// seenIncoming menyimpan ID pesan yang sudah diproses per agent. Selama migrasi LID,
+// server WhatsApp bisa mengirim SATU pesan yang sama dua kali — sekali dialamatkan ke
+// sesi nomor telepon, sekali ke sesi LID — dengan ID pesan identik. Kedua event punya
+// "sender" berbeda, sehingga kunci debounce & lock per-kontak tidak menahannya dan
+// customer menerima balasan dobel. Saringan berbasis ID pesan menutup celah itu.
+var seenIncoming = struct {
+	mu   sync.Mutex
+	at   map[string]time.Time
+	last time.Time // kapan entri kedaluwarsa terakhir disapu
+}{at: make(map[string]time.Time)}
+
+// markIncomingSeen mengembalikan false bila ID pesan ini sudah pernah diproses agent
+// tersebut dalam incomingDedupeTTL terakhir (artinya event ini kiriman ganda).
+func markIncomingSeen(agentID uint, msgID types.MessageID) bool {
+	id := strings.TrimSpace(string(msgID))
+	if id == "" {
+		return true // tanpa ID tidak ada yang bisa dibandingkan; jangan buang pesannya
+	}
+	key := fmt.Sprintf("%d:%s", agentID, id)
+	now := time.Now()
+
+	seenIncoming.mu.Lock()
+	defer seenIncoming.mu.Unlock()
+	if seenAt, ok := seenIncoming.at[key]; ok && now.Sub(seenAt) < incomingDedupeTTL {
+		return false
+	}
+	// Sapu entri kedaluwarsa sesekali saja supaya map tidak tumbuh tanpa batas
+	// tanpa harus menelusuri seluruh isinya pada setiap pesan.
+	if now.Sub(seenIncoming.last) >= incomingDedupeTTL {
+		seenIncoming.last = now
+		for k, t := range seenIncoming.at {
+			if now.Sub(t) >= incomingDedupeTTL {
+				delete(seenIncoming.at, k)
+			}
+		}
+	}
+	seenIncoming.at[key] = now
+	return true
+}
+
+// resolvePN mengubah alamat LID jadi nomor telepon asli. Alamat alternatif dari event
+// dipakai lebih dulu; untuk kontak yang baru pertama kali chat field itu masih kosong,
+// jadi pemetaan LID->PN di store dipakai sebagai cadangan. Tanpa cadangan ini satu
+// orang bisa tercatat sebagai dua kontak: satu baris LID tanpa nama, satu baris nomor asli.
+func (w *waInstance) resolvePN(jid, alt types.JID) types.JID {
+	if jid.Server != types.HiddenUserServer {
+		return jid
+	}
+	if !alt.IsEmpty() {
+		return alt
+	}
+	if pn := w.PNForLID(jid.User); pn != "" {
+		return types.NewJID(pn, types.DefaultUserServer)
+	}
+	return jid
+}
+
 func (w *waInstance) handleEvent(evt interface{}) {
 	switch v := evt.(type) {
 	case *events.Connected:
@@ -501,6 +561,12 @@ func (w *waInstance) handleEvent(evt interface{}) {
 		Go("onReceipt", func() { onReceipt(w.agentID, meta) })
 
 	case *events.Message:
+		// Satu pesan bisa dikirim server dua kali (alamat nomor telepon & alamat LID).
+		// Proses hanya yang pertama datang; sisanya dibuang agar tidak ada balasan dobel.
+		if !markIncomingSeen(w.agentID, v.Info.ID) {
+			log.Printf("WA agent %d: pesan %s datang ganda (alamat LID/nomor) — diabaikan", w.agentID, v.Info.ID)
+			return
+		}
 		// Pesan manual dari HP/perangkat tertaut lain dicatat sebagai takeover manusia.
 		// Event kiriman service sendiri tidak memiliki DeviceSentMeta dan tetap dilewati.
 		if v.Info.IsFromMe {
@@ -508,10 +574,7 @@ func (w *waInstance) handleEvent(evt interface{}) {
 				in, ok := w.extractIncoming(v)
 				if ok {
 					in.WAMsgID = string(v.Info.ID)
-					recipient := v.Info.Chat
-					if recipient.Server == types.HiddenUserServer && !v.Info.RecipientAlt.IsEmpty() {
-						recipient = v.Info.RecipientAlt
-					}
+					recipient := w.resolvePN(v.Info.Chat, v.Info.RecipientAlt)
 					Go("onOwnMessage", func() { onOwnMessage(w.agentID, recipient, in) })
 				}
 			}
@@ -521,10 +584,7 @@ func (w *waInstance) handleEvent(evt interface{}) {
 		// moderasi terpisah, dan hanya kalau handler moderasi terpasang.
 		if v.Info.IsGroup {
 			if onGroupMessage != nil {
-				sender := v.Info.Sender
-				if sender.Server == types.HiddenUserServer && !v.Info.SenderAlt.IsEmpty() {
-					sender = v.Info.SenderAlt
-				}
+				sender := w.resolvePN(v.Info.Sender, v.Info.SenderAlt)
 				meta := GroupMessageMeta{
 					GroupJID:   v.Info.Chat.String(),
 					SenderJID:  v.Info.Sender.String(),
@@ -555,12 +615,9 @@ func (w *waInstance) handleEvent(evt interface{}) {
 		in.ChatJID = v.Info.Chat
 		in.SenderJID = v.Info.Sender
 		in.PushName = v.Info.PushName
-		// Kontak modern bisa beralamat LID (privasi). Pakai nomor telepon asli (SenderAlt)
-		// agar yang tersimpan & ditampilkan adalah nomor WA betulan, bukan angka LID.
-		contact := v.Info.Sender
-		if contact.Server == types.HiddenUserServer && !v.Info.SenderAlt.IsEmpty() {
-			contact = v.Info.SenderAlt
-		}
+		// Kontak modern bisa beralamat LID (privasi). Pakai nomor telepon asli agar yang
+		// tersimpan & ditampilkan adalah nomor WA betulan, bukan angka LID.
+		contact := w.resolvePN(v.Info.Sender, v.Info.SenderAlt)
 		Go("onMessage", func() { onMessage(w.agentID, contact, in) })
 	}
 }

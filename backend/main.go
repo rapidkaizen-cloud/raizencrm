@@ -61,6 +61,8 @@ func main() {
 	// Sambungkan ulang semua agent yang sudah ter-link.
 	services.Go("StartAgents", handlers.StartAgents)
 	services.StartReconnectWatchdogCtx(appCtx, 90*time.Second)
+	// Gabungkan pengirim yang terlanjur tercatat sebagai LID ke nomor telepon aslinya.
+	handlers.StartLIDSweeperCtx(appCtx)
 
 	// Lanjutkan broadcast yang sempat terhenti saat server mati; tandai jadwal yang nyangkut.
 	services.Go("ResumeBroadcasts", handlers.ResumeBroadcasts)

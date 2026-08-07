@@ -237,6 +237,19 @@ func TestProductCheckoutAvailable(t *testing.T) {
 	}
 }
 
+// Katalog DeepSeek tidak mengirim field "name", jadi model tak boleh ikut terbuang
+// dan urutannya harus jatuh ke ID.
+func TestFilterChatModelsTanpaName(t *testing.T) {
+	got := filterChatModels([]ChatModelInfo{
+		{ID: "deepseek-reasoner"},
+		{ID: "deepseek-chat"},
+		{ID: "text-embedding-3-small"},
+	})
+	if len(got) != 2 || got[0].ID != "deepseek-chat" || got[1].ID != "deepseek-reasoner" {
+		t.Fatalf("filter model chat DeepSeek = %#v", got)
+	}
+}
+
 func TestFilterVisionModels(t *testing.T) {
 	textOnly := ChatModelInfo{ID: "text-only", Name: "Text"}
 	textOnly.Architecture.InputModalities = []string{"text"}

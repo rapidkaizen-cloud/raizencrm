@@ -49,15 +49,32 @@ type ChatModelInfo struct {
 	} `json:"architecture,omitempty"`
 }
 
+// ListChatModelsForProvider mengambil katalog model chat dari provider yang diminta.
+// DeepSeek Direct punya katalog sendiri (isinya cuma beberapa model), OpenRouter ratusan.
+// provider kosong = pakai setting tersimpan; dashboard mengirimkannya agar daftar
+// ikut berubah sebelum pilihan provider disimpan.
+func ListChatModelsForProvider(ctx context.Context, provider string) ([]ChatModelInfo, error) {
+	if provider == "" {
+		provider = database.GetAppSetting("chat_provider", "")
+	}
+	if provider == "deepseek-direct" {
+		return listChatModels(ctx, deepseekBase, apiKeyFromDB("deepseek_api_key", "DEEPSEEK_API_KEY"), "DeepSeek")
+	}
+	return ListOpenRouterChatModels(ctx)
+}
+
 // ListOpenRouterChatModels mengambil katalog model chat terbaru dari OpenRouter.
 func ListOpenRouterChatModels(ctx context.Context) ([]ChatModelInfo, error) {
-	key := apiKeyFromDB("api_key", "OPENROUTER_API_KEY")
+	return listChatModels(ctx, openRouterBase, apiKeyFromDB("api_key", "OPENROUTER_API_KEY"), "OpenRouter")
+}
+
+func listChatModels(ctx context.Context, base, key, label string) ([]ChatModelInfo, error) {
 	if key == "" {
-		return nil, fmt.Errorf("API key OpenRouter belum dikonfigurasi")
+		return nil, fmt.Errorf("API key %s belum dikonfigurasi", label)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, openRouterBase+"/models", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/models", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -65,22 +82,25 @@ func ListOpenRouterChatModels(ctx context.Context) ([]ChatModelInfo, error) {
 	req.Header.Set("Accept", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("gagal mengambil katalog model OpenRouter: %w", err)
+		return nil, fmt.Errorf("gagal mengambil katalog model %s: %w", label, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("OpenRouter mengembalikan status %d", resp.StatusCode)
+		return nil, fmt.Errorf("%s mengembalikan status %d", label, resp.StatusCode)
 	}
 	var payload struct {
 		Data []ChatModelInfo `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return nil, fmt.Errorf("respons katalog model OpenRouter tidak valid: %w", err)
+		return nil, fmt.Errorf("respons katalog model %s tidak valid: %w", label, err)
 	}
-	// Filter hanya model chat (bukan embedding/image/audio).
+	return filterChatModels(payload.Data), nil
+}
+
+// filterChatModels membuang model non-chat (embedding/gambar/audio) lalu mengurutkannya.
+func filterChatModels(all []ChatModelInfo) []ChatModelInfo {
 	var chatModels []ChatModelInfo
-	for _, m := range payload.Data {
-		// Skip model embedding dan model khusus lainnya.
+	for _, m := range all {
 		if strings.Contains(strings.ToLower(m.ID), "embed") ||
 			strings.Contains(strings.ToLower(m.ID), "dall-e") ||
 			strings.Contains(strings.ToLower(m.ID), "tts") ||
@@ -90,10 +110,18 @@ func ListOpenRouterChatModels(ctx context.Context) ([]ChatModelInfo, error) {
 		}
 		chatModels = append(chatModels, m)
 	}
+	// DeepSeek tidak mengirim "name", jadi urutkan pakai ID sebagai cadangan.
 	sort.Slice(chatModels, func(i, j int) bool {
-		return chatModels[i].Name < chatModels[j].Name
+		a, b := chatModels[i].Name, chatModels[j].Name
+		if a == "" {
+			a = chatModels[i].ID
+		}
+		if b == "" {
+			b = chatModels[j].ID
+		}
+		return a < b
 	})
-	return chatModels, nil
+	return chatModels
 }
 
 func ListOpenRouterVisionModels(ctx context.Context) ([]ChatModelInfo, error) {
@@ -171,7 +199,7 @@ func aiPresetDefs() []aiPreset {
 	return []aiPreset{
 		// --- DeepSeek Direct (API langsung, lebih murah) ---
 		{Key: "deepseek-direct", Label: "DeepSeek (Direct API)", Short: "DeepSeek Direct",
-			Model: "deepseek-chat", BaseURL: deepseekBase, KeyEnv: "DEEPSEEK_API_KEY"},
+			Model: apiConfigFromDB("deepseek_model", "DEEPSEEK_MODEL", "deepseek-chat"), BaseURL: deepseekBase, KeyEnv: "DEEPSEEK_API_KEY"},
 		// --- OpenRouter (supermarket model) ---
 		{Key: "deepseek", Label: "DeepSeek (OpenRouter)", Short: "DeepSeek",
 			Model: "deepseek/deepseek-chat", BaseURL: openRouterBase, KeyEnv: "OPENROUTER_API_KEY"},

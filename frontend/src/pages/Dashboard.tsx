@@ -322,6 +322,7 @@ export default function Dashboard() {
   const [deepseekKey, setDeepseekKey] = useState('');
   const [chatProvider, setChatProvider] = useState('deepseek-direct'); // deepseek-direct | openrouter
   const [apiModel, setApiModel] = useState('deepseek/deepseek-chat');
+  const [deepseekModel, setDeepseekModel] = useState('deepseek-chat');
   const [visionModel, setVisionModel] = useState('');
   const [embeddingModel, setEmbeddingModel] = useState('openai/text-embedding-3-small');
   const [embeddingModels, setEmbeddingModels] = useState<EmbeddingModelOption[]>([]);
@@ -623,6 +624,7 @@ export default function Dashboard() {
     if (deepseekKey && !deepseekKey.includes('*')) apiConfig.deepseek_api_key = deepseekKey;
     if (chatProvider) apiConfig.chat_provider = chatProvider;
     if (apiModel) apiConfig.api_model = apiModel;
+    if (deepseekModel) apiConfig.deepseek_model = deepseekModel;
     if (visionModel) apiConfig.vision_model = visionModel;
     if (embeddingModel) apiConfig.embedding_model = embeddingModel;
     if (Object.keys(apiConfig).length === 0) {
@@ -633,8 +635,8 @@ export default function Dashboard() {
       await api.put('/settings/api-config', apiConfig);
       swalToast('Konfigurasi AI disimpan. Model langsung aktif.', 'success');
       // Refresh daftar model setelah simpan (karena api key mungkin baru)
+      if (apiConfig.api_key || apiConfig.deepseek_api_key) void loadChatModels();
       if (apiConfig.api_key) {
-        void loadChatModels();
         void loadVisionModels();
         void loadEmbeddingModels();
       }
@@ -657,15 +659,15 @@ export default function Dashboard() {
     }
   };
 
-  const loadChatModels = async () => {
+  const loadChatModels = async (provider = chatProvider) => {
     setChatModelsLoading(true);
     setChatModelsError('');
     try {
-      const res = await api.get('/settings/chat-models');
+      const res = await api.get('/settings/chat-models', { params: { provider } });
       setChatModels(Array.isArray(res.data?.data) ? res.data.data : []);
     } catch (error) {
       const message = (error as { response?: { data?: { error?: string } } })?.response?.data?.error;
-      setChatModelsError(message || 'Daftar model chat belum dapat dimuat. Simpan API key OpenRouter terlebih dahulu.');
+      setChatModelsError(message || 'Daftar model chat belum dapat dimuat. Simpan API key terlebih dahulu.');
     } finally {
       setChatModelsLoading(false);
     }
@@ -693,15 +695,25 @@ export default function Dashboard() {
       if (cfg.deepseek_api_key) setDeepseekKey(cfg.deepseek_api_key);
       if (cfg.chat_provider) setChatProvider(cfg.chat_provider);
       if (cfg.api_model) setApiModel(cfg.api_model);
+      if (cfg.deepseek_model) setDeepseekModel(cfg.deepseek_model);
       if (cfg.vision_model) setVisionModel(cfg.vision_model);
       if (cfg.embedding_model) setEmbeddingModel(cfg.embedding_model);
+      // Katalog chat ikut provider tersimpan; vision & embedding selalu lewat OpenRouter.
+      if (cfg.api_key || cfg.deepseek_api_key) void loadChatModels(cfg.chat_provider || '');
       if (cfg.api_key) {
-        void loadChatModels();
         void loadVisionModels();
         void loadEmbeddingModels();
       }
     } catch { /* belum ada config */ }
   };
+
+  // Model chat disimpan terpisah per provider: id DeepSeek ("deepseek-chat") dan
+  // id OpenRouter ("deepseek/deepseek-chat") tidak saling kompatibel.
+  const isDeepSeekDirect = chatProvider === 'deepseek-direct';
+  const chatProviderName = isDeepSeekDirect ? 'DeepSeek' : 'OpenRouter';
+  const chatModelLabel = `Model chat ${chatProviderName}`;
+  const chatModelValue = isDeepSeekDirect ? deepseekModel : apiModel;
+  const setChatModelValue = isDeepSeekDirect ? setDeepseekModel : setApiModel;
 
   // Auto-load config saat membuka tab AI & Model
   useEffect(() => {
@@ -2030,7 +2042,11 @@ export default function Dashboard() {
 
                 <FormControl size="small" fullWidth sx={{ mb: 1.5 }}>
                   <InputLabel>Provider Chat AI</InputLabel>
-                  <Select value={chatProvider} label="Provider Chat AI" onChange={e => setChatProvider(e.target.value)}>
+                  <Select
+                    value={chatProvider}
+                    label="Provider Chat AI"
+                    onChange={e => { setChatProvider(e.target.value); void loadChatModels(e.target.value); }}
+                  >
                     <MenuItem value="deepseek-direct">DeepSeek Direct (rekomendasi — hemat)</MenuItem>
                     <MenuItem value="openrouter">OpenRouter (supermarket model)</MenuItem>
                   </Select>
@@ -2105,21 +2121,21 @@ export default function Dashboard() {
                     </Stack>
                     <Typography variant="caption" color="text.secondary">Model yang dipakai untuk membalas chat pelanggan dan fitur AI lainnya.</Typography>
                   </Box>
-                  <Button size="small" onClick={loadChatModels} disabled={chatModelsLoading} sx={{ flexShrink: 0 }}>
+                  <Button size="small" onClick={() => loadChatModels()} disabled={chatModelsLoading} sx={{ flexShrink: 0 }}>
                     {chatModelsLoading ? 'Memuat…' : 'Muat ulang model'}
                   </Button>
                 </Stack>
 
                 {chatModels.length > 0 ? (
                   <FormControl fullWidth size="small">
-                    <InputLabel>Model chat OpenRouter</InputLabel>
+                    <InputLabel>{chatModelLabel}</InputLabel>
                     <Select
-                      value={apiModel}
-                      label="Model chat OpenRouter"
-                      onChange={e => setApiModel(e.target.value)}
+                      value={chatModelValue}
+                      label={chatModelLabel}
+                      onChange={e => setChatModelValue(e.target.value)}
                     >
-                      {!chatModels.some(m => m.id === apiModel) && apiModel && (
-                        <MenuItem value={apiModel}>{apiModel}{' '}<Typography component="span" variant="caption" color="text.secondary">(tersimpan)</Typography></MenuItem>
+                      {!chatModels.some(m => m.id === chatModelValue) && chatModelValue && (
+                        <MenuItem value={chatModelValue}>{chatModelValue}{' '}<Typography component="span" variant="caption" color="text.secondary">(tersimpan)</Typography></MenuItem>
                       )}
                       {chatModels.map(m => (
                         <MenuItem key={m.id} value={m.id}>
@@ -2131,22 +2147,22 @@ export default function Dashboard() {
                       ))}
                     </Select>
                     <FormHelperText>
-                      Model diambil langsung dari katalog OpenRouter. Ganti kapan saja — perubahan langsung aktif tanpa restart.
+                      Model diambil langsung dari katalog {chatProviderName}. Ganti kapan saja — perubahan langsung aktif tanpa restart.
                     </FormHelperText>
                   </FormControl>
                 ) : chatModelsLoading ? (
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 1 }}>
                     <CircularProgress size={16} />
-                    <Typography variant="caption" color="text.secondary">Memuat daftar model dari OpenRouter…</Typography>
+                    <Typography variant="caption" color="text.secondary">Memuat daftar model dari {chatProviderName}…</Typography>
                   </Box>
-                ) : apiModel ? (
+                ) : chatModelValue ? (
                   <TextField
                     fullWidth
                     size="small"
                     label="Model chat"
-                    value={apiModel}
+                    value={chatModelValue}
                     disabled
-                    helperText={chatModelsError || 'Klik "Muat ulang model" untuk mengambil daftar terbaru dari OpenRouter.'}
+                    helperText={chatModelsError || `Klik "Muat ulang model" untuk mengambil daftar terbaru dari ${chatProviderName}.`}
                   />
                 ) : (
                   <Typography variant="caption" color="text.secondary">

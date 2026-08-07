@@ -14,7 +14,7 @@ import (
 // apiConfigKeys = semua key AppSetting yang dipakai untuk konfigurasi API.
 var apiConfigKeys = []string{
 	"api_key", "api_model", "vision_model", "embedding_model",
-	"deepseek_api_key", "chat_provider",
+	"deepseek_api_key", "deepseek_model", "chat_provider",
 }
 
 // sensitiveAPIKeys = key yang disimpan terenkripsi at-rest & disamarkan saat ditampilkan.
@@ -81,9 +81,10 @@ func ListEmbeddingModels(c *gin.Context) {
 	c.JSON(200, gin.H{"data": models})
 }
 
-// ListChatModels mengembalikan katalog model chat dari OpenRouter untuk pilihan di dashboard.
+// ListChatModels mengembalikan katalog model chat dari provider chat yang aktif
+// (DeepSeek Direct atau OpenRouter) untuk pilihan di dashboard.
 func ListChatModels(c *gin.Context) {
-	models, err := services.ListOpenRouterChatModels(c.Request.Context())
+	models, err := services.ListChatModelsForProvider(c.Request.Context(), c.Query("provider"))
 	if err != nil {
 		c.JSON(502, gin.H{"error": err.Error()})
 		return
